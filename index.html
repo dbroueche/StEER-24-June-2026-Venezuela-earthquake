@@ -126,6 +126,16 @@
   .pop .x{position:absolute;top:6px;right:9px;color:var(--ink-faint);cursor:pointer;font-size:14px}
   .ol-popup{position:absolute;transform:translate(-50%,calc(-100% - 12px))}
 
+  /* coordinate jump */
+  .goto{display:flex;gap:6px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
+  .goto input{flex:1;min-width:0;background:var(--panel-2);border:1px solid var(--line);color:var(--ink);
+       border-radius:6px;padding:7px 9px;font:12px var(--mono)}
+  .goto input::placeholder{color:var(--ink-faint)}
+  .goto.err input{border-color:var(--bad)}
+  .goto button{flex:none;border:0;border-radius:6px;background:var(--accent);color:#0c1014;
+       font:600 12px var(--sans);padding:7px 11px;cursor:pointer}
+  .goto button.clear{background:#26323d;color:var(--ink-dim);padding:7px 10px;font-size:14px;line-height:1}
+
   @media (max-width:720px){#panel{position:absolute;z-index:5;height:100%;box-shadow:0 0 40px #000}}
 </style>
 </head>
@@ -137,6 +147,12 @@
       <div class="title">Venezuela Earthquake — Jun 24, 2026</div>
       <div class="sub">M7.2 foreshock + M7.5 mainshock · Vantor imagery, USGS shaking intensity</div>
       <div class="status" id="status">Loading STAC collection…</div>
+    </div>
+
+    <div class="goto">
+      <input id="coord" type="text" placeholder="lat, lon — e.g. 10.497, -66.853" autocomplete="off" />
+      <button id="coord-go">Go</button>
+      <button id="coord-clear" class="clear" title="Clear pin" style="display:none">×</button>
     </div>
 
     <div class="scroll">
@@ -588,6 +604,55 @@ sw("sw-crisis", async on=>{ if(on){ const ok=await loadCrisis(); crisisLayer.set
   crisisLayer.setVisible(false); });
 
 /* ======================================================================
+   Coordinate jump — type "lat, lon", drop a crosshair, fly there
+   ====================================================================== */
+const PIN = 'data:image/svg+xml,'+encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 30 30">
+     <circle cx="15" cy="15" r="9.5" fill="none" stroke="#0c1014" stroke-width="3.5"/>
+     <circle cx="15" cy="15" r="9.5" fill="none" stroke="#ff8a3d" stroke-width="2"/>
+     <g stroke="#ff8a3d" stroke-width="2"><line x1="15" y1="1" x2="15" y2="6"/>
+     <line x1="15" y1="24" x2="15" y2="29"/><line x1="1" y1="15" x2="6" y2="15"/>
+     <line x1="24" y1="15" x2="29" y2="15"/></g>
+     <circle cx="15" cy="15" r="2" fill="#ff8a3d"/></svg>`);
+const markerSource=new ol.source.Vector();
+const markerLayer=new ol.layer.Vector({ source:markerSource, zIndex:60,
+  style:new ol.style.Style({ image:new ol.style.Icon({src:PIN, anchor:[0.5,0.5]}) }) });
+map.addLayer(markerLayer);
+
+// Accepts "10.497, -66.853", "10.5 -66.8", "10.5N, 66.85W", with optional ° symbols.
+function parseCoord(s){
+  if(!s) return null;
+  const m=s.trim().match(
+    /^(-?\d+(?:\.\d+)?)\s*°?\s*([NnSs])?\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*°?\s*([EeWw])?$/);
+  if(!m) return null;
+  let lat=parseFloat(m[1]), lon=parseFloat(m[3]);
+  if(m[2]) lat=/[Ss]/.test(m[2])?-Math.abs(lat):Math.abs(lat);
+  if(m[4]) lon=/[Ww]/.test(m[4])?-Math.abs(lon):Math.abs(lon);
+  if(!isFinite(lat)||!isFinite(lon)||lat<-90||lat>90||lon<-180||lon>180) return null;
+  return [lon,lat];
+}
+const gotoBox=document.querySelector(".goto");
+const coordEl=document.getElementById("coord");
+const clearBtn=document.getElementById("coord-clear");
+function gotoCoord(){
+  const c=parseCoord(coordEl.value);
+  if(!c){ gotoBox.classList.add("err"); return; }
+  gotoBox.classList.remove("err");
+  const [lon,lat]=c, xy=ol.proj.fromLonLat([lon,lat]);
+  markerSource.clear();
+  const feat=new ol.Feature({geometry:new ol.geom.Point(xy)});
+  feat.set("_kind","marker"); feat.set("_coord",[lat,lon]);
+  markerSource.addFeature(feat);
+  view.animate({center:xy, zoom:Math.max(view.getZoom(),16), duration:550});
+  clearBtn.style.display="";
+}
+document.getElementById("coord-go").onclick=gotoCoord;
+coordEl.addEventListener("keydown",e=>{ if(e.key==="Enter") gotoCoord(); });
+coordEl.addEventListener("input",()=>gotoBox.classList.remove("err"));
+clearBtn.onclick=()=>{ markerSource.clear(); coordEl.value=""; clearBtn.style.display="none";
+  gotoBox.classList.remove("err"); };
+
+/* ======================================================================
    Click popup (footprint -> toggle imagery; crisis -> attributes)
    ====================================================================== */
 const popEl=document.getElementById("popup");
@@ -623,6 +688,12 @@ map.on("singleclick", e=>{
         <div class="kv ${approx?"approx":""}">coords · ${approx?"approximate (geocoded)":"precise"}</div>
         ${srcs?`<div class="src">${srcs}</div>`:""}
       </div>`;
+    } else if(layer===markerLayer){
+      const [lat,lon]=f.get("_coord");
+      popEl.innerHTML=`<div class="pop"><span class="x">×</span>
+        <h4>Pinned location</h4>
+        <div class="kv">lat · <b>${lat.toFixed(5)}</b></div>
+        <div class="kv">lon · <b>${lon.toFixed(5)}</b></div></div>`;
     } else return;
     popEl.querySelector(".x").onclick=()=>overlay.setPosition(undefined);
     popEl.style.display=""; overlay.setPosition(e.coordinate); hit=true;
