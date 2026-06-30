@@ -10,8 +10,7 @@ Everything is one `index.html`. It fetches all data live, so viewers always see 
 
 ## Live demo
 
-> After enabling GitHub Pages (below), put your URL here:
-> `https://<your-username>.github.io/<repo-name>/`
+https://dbroueche.github.io/StEER-24-June-2026-Venezuela-earthquake/
 
 ## Features
 
