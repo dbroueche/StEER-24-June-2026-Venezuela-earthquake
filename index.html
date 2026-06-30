@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Venezuela Earthquake · Imagery + Intensity Viewer</title>
+<meta name="description" content="Open web map of the June 24, 2026 Venezuela earthquake: Vantor satellite imagery footprints, USGS ShakeMap intensity, and live building-damage points. Non-commercial." />
+<meta property="og:title" content="Venezuela Earthquake — Imagery + Intensity Viewer" />
+<meta property="og:description" content="Toggle Vantor satellite scenes, overlay USGS shaking intensity, and filter live building-damage reports by state." />
+<meta property="og:type" content="website" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10/ol.css" />
+<style>
+  :root{
+    --bg:#0c1014; --panel:#10161d; --panel-2:#141c25; --line:#1f2a35;
+    --ink:#e7ecf2; --ink-dim:#8b97a6; --ink-faint:#5b6773;
+    --accent:#ff8a3d;          /* seismic amber — active / intensity */
+    --foot:#36d6cf;            /* footprints — cool, distinct from warm intensity */
+    --foot-fill:rgba(54,214,207,.10);
+    --crisis:#ff5d8f;          /* crisis reports */
+    --good:#7fd66b; --bad:#ff6b6b;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans)}
+  #app{display:flex;height:100%}
+  #map{flex:1;position:relative;background:#070a0d}
+
+  /* ---- Panel ---- */
+  #panel{width:340px;flex:none;background:var(--panel);border-right:1px solid var(--line);
+         display:flex;flex-direction:column;overflow:hidden}
+  .head{padding:14px 16px 12px;border-bottom:1px solid var(--line)}
+  .kicker{font:600 10px/1 var(--mono);letter-spacing:.22em;color:var(--accent);text-transform:uppercase}
+  .title{margin:7px 0 2px;font-size:16px;font-weight:650;letter-spacing:-.01em}
+  .sub{font:12px/1.45 var(--sans);color:var(--ink-dim)}
+  .status{margin-top:9px;font:11px/1.5 var(--mono);color:var(--ink-faint);white-space:pre-line}
+  .status b{color:var(--ink)}
+
+  .scroll{overflow-y:auto;flex:1}
+  .scroll::-webkit-scrollbar{width:9px}
+  .scroll::-webkit-scrollbar-thumb{background:#22303c;border-radius:9px;border:2px solid var(--panel)}
+
+  .sect{border-bottom:1px solid var(--line)}
+  .sect > .bar{display:flex;align-items:center;gap:9px;padding:11px 16px;cursor:pointer;user-select:none}
+  .bar .name{font:600 11px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-dim);flex:1}
+  .bar .count{font:11px var(--mono);color:var(--ink-faint)}
+  .chev{color:var(--ink-faint);transition:transform .15s ease;font-size:11px}
+  .sect.collapsed .chev{transform:rotate(-90deg)}
+  .sect.collapsed .body{display:none}
+  .body{padding:2px 12px 13px}
+
+  /* switch */
+  .row{display:flex;align-items:center;gap:10px;padding:7px 4px;border-radius:6px}
+  .row:hover{background:var(--panel-2)}
+  .sw{position:relative;width:32px;height:18px;flex:none;border-radius:9px;background:#26323d;
+      cursor:pointer;transition:background .15s}
+  .sw::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;
+      background:#aeb9c5;transition:transform .15s}
+  .sw.on{background:var(--accent)}
+  .sw.on.foot{background:var(--foot)} .sw.on.crisis{background:var(--crisis)}
+  .sw.on::after{transform:translateX(14px);background:#0c1014}
+  .row .lbl{font-size:13px;color:var(--ink)} .row .meta{font:11px var(--mono);color:var(--ink-faint)}
+
+  /* imagery list */
+  .filter{display:flex;gap:8px;align-items:center;margin:4px 4px 8px}
+  .filter input[type=text]{flex:1;background:var(--panel-2);border:1px solid var(--line);color:var(--ink);
+      border-radius:6px;padding:6px 9px;font:12px var(--mono)}
+  .filter input::placeholder{color:var(--ink-faint)}
+  .opacity{display:flex;align-items:center;gap:8px;padding:2px 4px 10px;color:var(--ink-dim);font:11px var(--mono)}
+  .opacity input{flex:1}
+  .item{display:flex;align-items:center;gap:9px;padding:6px 5px;border-radius:6px;cursor:default}
+  .item:hover{background:var(--panel-2)}
+  .item .box{width:15px;height:15px;flex:none;border:1.5px solid #38454f;border-radius:4px;cursor:pointer;
+      display:grid;place-items:center}
+  .item.on .box{background:var(--accent);border-color:var(--accent)}
+  .item.on .box::after{content:"";width:7px;height:7px;border-radius:1px;background:#0c1014}
+  .item.err .id{color:var(--bad)}
+  .item.err .id::after{content:" · load failed";color:var(--bad);font-size:10px}
+  .item .info{flex:1;min-width:0}
+  .item .id{font:12px/1.25 var(--mono);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .item .when{font:10.5px/1.2 var(--mono);color:var(--ink-faint)}
+  .item .zoom{opacity:0;border:0;background:#222e38;color:var(--ink-dim);border-radius:5px;
+      font:10px var(--mono);padding:4px 7px;cursor:pointer;flex:none}
+  .item:hover .zoom{opacity:1} .item .zoom:hover{background:#2c3a45;color:var(--ink)}
+
+  /* legend */
+  .legend{display:flex;flex-direction:column;gap:5px;padding:4px}
+  .lg{display:flex;align-items:center;gap:9px;font:11px var(--mono);color:var(--ink-dim)}
+  .lg i{width:22px;height:10px;border-radius:2px;flex:none}
+
+  .grp{font:600 10px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;
+       color:var(--ink-faint);padding:12px 5px 5px;border-top:1px solid var(--line);margin-top:8px}
+  .grp:first-child{border-top:0;margin-top:0}
+  .lvl{display:flex;align-items:center;gap:9px;padding:5px 6px 5px 12px;border-radius:6px;cursor:pointer}
+  .lvl:hover{background:var(--panel-2)}
+  .lvl .box{width:14px;height:14px;flex:none;border-radius:4px;border:1.5px solid #38454f;display:grid;place-items:center}
+  .lvl.on .box{border-color:transparent}
+  .lvl.on .box::after{content:"";width:8px;height:8px;border-radius:2px;background:var(--c)}
+  .lvl .dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--c)}
+  .lvl .t{flex:1;font-size:12.5px;color:var(--ink)} .lvl .n{font:11px var(--mono);color:var(--ink-faint)}
+  .lvl.off{opacity:.45} .lvl.off .t{color:var(--ink-dim)}
+
+  .note{padding:10px 16px;font:11px/1.5 var(--sans);color:var(--ink-faint);border-top:1px solid var(--line)}
+  .note code{font-family:var(--mono);color:var(--ink-dim)}
+  .credits{margin-top:8px;padding-top:8px;border-top:1px solid var(--line);font:10.5px/1.55 var(--sans);color:var(--ink-faint)}
+  .credits b{color:var(--ink-dim)}
+  a{color:var(--foot)}
+
+  /* popup */
+  .pop{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:11px 13px;
+       min-width:230px;max-width:300px;box-shadow:0 8px 28px rgba(0,0,0,.5);font-family:var(--sans)}
+  .pop h4{margin:0 0 2px;font:13px/1.25 var(--sans);font-weight:650;padding-right:16px}
+  .pop .tag{display:inline-block;font:600 10px/1 var(--mono);text-transform:uppercase;letter-spacing:.06em;
+       padding:4px 7px;border-radius:4px;color:#0c1014;margin:4px 0 8px}
+  .pop .kv{font:11.5px/1.6 var(--mono);color:var(--ink-dim)}
+  .pop .kv b{color:var(--ink);font-weight:600}
+  .pop .desc{font:12px/1.45 var(--sans);color:var(--ink);margin:7px 0;padding:7px 9px;background:var(--panel-2);border-radius:6px}
+  .pop .trapped{color:var(--bad);font-weight:650}
+  .pop .approx{color:var(--accent)}
+  .pop .src{margin-top:8px;border-top:1px solid var(--line);padding-top:7px}
+  .pop .src a{display:block;font:11px var(--mono);color:var(--foot);text-decoration:none;
+       white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:2px 0}
+  .pop .src a:hover{text-decoration:underline}
+  .pop button{margin-top:9px;width:100%;border:0;border-radius:6px;background:var(--accent);color:#0c1014;
+       font:600 12px var(--sans);padding:7px;cursor:pointer}
+  .pop .x{position:absolute;top:6px;right:9px;color:var(--ink-faint);cursor:pointer;font-size:14px}
+  .ol-popup{position:absolute;transform:translate(-50%,calc(-100% - 12px))}
+
+  @media (max-width:720px){#panel{position:absolute;z-index:5;height:100%;box-shadow:0 0 40px #000}}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="panel">
+    <div class="head">
+      <div class="kicker">Open Data · Situational Awareness</div>
+      <div class="title">Venezuela Earthquake — Jun 24, 2026</div>
+      <div class="sub">M7.2 foreshock + M7.5 mainshock · Vantor imagery, USGS shaking intensity</div>
+      <div class="status" id="status">Loading STAC collection…</div>
+    </div>
+
+    <div class="scroll">
+      <!-- Overlays -->
+      <section class="sect" id="sect-overlays">
+        <div class="bar"><span class="name">Overlays</span><span class="chev">▾</span></div>
+        <div class="body">
+          <div class="row"><span class="sw on foot" id="sw-foot"></span>
+            <div style="flex:1"><div class="lbl">Image footprints</div>
+            <div class="meta" id="foot-meta">—</div></div></div>
+
+          <div class="grp">USGS intensity · MMI</div>
+          <div id="mmi-rows"></div>
+
+          <div class="grp">Building damage</div>
+          <div class="row"><span class="sw crisis" id="sw-crisis"></span>
+            <div style="flex:1"><div class="lbl">Damage points</div>
+            <div class="meta" id="crisis-meta">not loaded</div></div></div>
+          <div id="crisis-levels"></div>
+        </div>
+      </section>
+
+      <!-- Intensity legend -->
+      <section class="sect collapsed" id="sect-legend">
+        <div class="bar"><span class="name">Intensity legend</span><span class="chev">▾</span></div>
+        <div class="body"><div class="legend" id="legend"></div></div>
+      </section>
+
+      <!-- Imagery -->
+      <section class="sect" id="sect-img">
+        <div class="bar"><span class="name">Imagery</span><span class="count" id="img-count">0</span><span class="chev">▾</span></div>
+        <div class="body">
+          <div class="filter"><input id="filter" type="text" placeholder="filter by id / date…" /></div>
+          <div class="opacity">opacity<input id="op" type="range" min="0" max="100" value="100" /><span id="op-val">100</span></div>
+          <div id="img-list"></div>
+        </div>
+      </section>
+
+      <!-- Base -->
+      <section class="sect collapsed" id="sect-base">
+        <div class="bar"><span class="name">Base map</span><span class="chev">▾</span></div>
+        <div class="body" id="base-body"></div>
+      </section>
+    </div>
+
+    <div class="note">
+      <div>Imagery streams from the COGs as you pan — no server. Click any footprint or damage point for details.</div>
+      <div class="credits">
+        Imagery © <a href="https://www.vantor.com/company/open-data-program/" target="_blank" rel="noopener">Vantor Open Data</a> (CC-BY-NC-4.0) ·
+        Shaking intensity: <a href="https://earthquake.usgs.gov/data/shakemap/" target="_blank" rel="noopener">USGS ShakeMap</a> (public domain) ·
+        Damage points: <a href="https://crisisvenezuela.org/" target="_blank" rel="noopener">crisisvenezuela.org</a> (CC-BY-4.0) ·
+        Basemap © OpenStreetMap, © CARTO. <b>Non-commercial use only.</b>
+      </div>
+    </div>
+  </aside>
+  <div id="map"></div>
+</div>
+
+<div id="popup" class="ol-popup" style="display:none"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/ol@10/dist/ol.js"></script>
+<!-- OL's standalone build externalizes these heavy libraries — load them as globals,
+     or ol.source.GeoTIFF throws "GeoTIFF is not defined" and proj4 reprojection fails. -->
+<script src="https://cdn.jsdelivr.net/npm/geotiff@3.0.5/dist-browser/geotiff.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/proj4@2.20.9/dist/proj4-src.js"></script>
+<script>
+// Register the UTM zones Venezuela spans so OL can reproject the ARD COGs to web mercator.
+// 18N (78–72°W), 19N (72–66°W, covers Morón/Caracas/La Guaira), 20N (66–60°W).
+try{
+  proj4.defs("EPSG:32618","+proj=utm +zone=18 +datum=WGS84 +units=m +no_defs");
+  proj4.defs("EPSG:32619","+proj=utm +zone=19 +datum=WGS84 +units=m +no_defs");
+  proj4.defs("EPSG:32620","+proj=utm +zone=20 +datum=WGS84 +units=m +no_defs");
+  ol.proj.proj4.register(proj4);
+}catch(e){ console.warn("proj4 registration failed (reprojection disabled):", e); }
+</script>
+<script>
+/* ======================================================================
+   CONFIG — everything you'd realistically change lives here.
+   ====================================================================== */
+const CONFIG = {
+  // Root of the Vantor STAC collection for this event.
+  stacCollection:
+    "https://vantor-opendata.s3.amazonaws.com/events/Venezuela-Earthquake-Jun-2026/collection.json",
+
+  // Which STAC asset to draw as the picture. Tried in order; first match wins.
+  // Vantor ARD usually ships a "visual" 8-bit RGB COG, which is what you want as a basemap.
+  cogAssetKeys: ["visual", "visual-rgb", "rgb", "image"],
+
+  // USGS ShakeMap events, each toggled independently. Mainshock defaults on — it's the
+  // higher-intensity envelope almost everywhere, so it reads as "highest intensity".
+  mmiEvents: [
+    { id:"us6000t7zp", label:"Mainshock · M7.5", on:true  },
+    { id:"us6000t7zc", label:"Foreshock · M7.2", on:false },
+  ],
+
+  // ---- Crisis API (crisisvenezuela.org, CC-BY-4.0, CORS open) --------------
+  crisis: {
+    base: "https://crisisvenezuela.org/api/v1/facts",
+    // categoria=daño (URL-encoded) → only structural-damage facts, as GeoJSON.
+    query: "?categoria=da%C3%B1o&formato=geojson&limite=5000",
+    // damage state (`nivel`) → label + color, most severe first.
+    levels: [
+      { key:"colapso_total", label:"Total collapse", color:"#b3122a" },
+      { key:"severo",        label:"Severe",         color:"#e8662b" },
+      { key:"parcial",       label:"Partial",        color:"#f2a93b" },
+      { key:"dano",          label:"Damage",         color:"#f4e04d" },
+    ],
+  },
+
+  center: [-68.45, 10.52], // near Morón / Yumare
+  zoom: 9
+};
+
+/* ======================================================================
+   Map + base layers
+   ====================================================================== */
+const view = new ol.View({ center: ol.proj.fromLonLat(CONFIG.center), zoom: CONFIG.zoom });
+
+const bases = {
+  "Carto dark": new ol.layer.Tile({ source: new ol.source.XYZ({
+    url:"https://{a-d}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+    attributions:"© OpenStreetMap · © CARTO" }) }),
+  "OpenStreetMap": new ol.layer.Tile({ visible:false, source: new ol.source.OSM() }),
+};
+Object.values(bases).forEach(l=>l.setZIndex(0));
+
+const map = new ol.Map({ target:"map", layers:Object.values(bases), view,
+  controls: ol.control.defaults.defaults({ attributionOptions:{collapsible:true} }) });
+
+// base radio UI
+const baseBody = document.getElementById("base-body");
+Object.keys(bases).forEach((name,i)=>{
+  const row=document.createElement("label"); row.className="row"; row.style.cursor="pointer";
+  row.innerHTML=`<input type="radio" name="base" ${i?"":"checked"} style="accent-color:var(--accent)">
+                 <span class="lbl">${name}</span>`;
+  row.querySelector("input").onchange=()=>Object.entries(bases).forEach(([n,l])=>l.setVisible(n===name));
+  baseBody.appendChild(row);
+});
+
+/* ======================================================================
+   Footprints + per-item imagery
+   ====================================================================== */
+const footSource = new ol.source.Vector();
+const footLayer = new ol.layer.Vector({ source: footSource, zIndex:20, style: f =>
+  f.get("_vis")===false ? null :
+  new ol.style.Style({
+    stroke: new ol.style.Stroke({ color: getComputedStyle(document.documentElement)
+      .getPropertyValue("--foot").trim(), width: f.get("_on")?2.5:1.4 }),
+    fill: new ol.style.Fill({ color: f.get("_on")?"rgba(255,138,61,.10)":"rgba(54,214,207,.07)" })
+  }) });
+map.addLayer(footLayer);
+
+const imageryLayers = new Map();   // itemId -> WebGLTile layer (lazy)
+const items = new Map();           // itemId -> {id,when,bbox,asset,feature}
+const gj = new ol.format.GeoJSON();
+let imageryOpacity = 1;
+
+function resolve(href, base){ try{ return new URL(href, base).href; }catch{ return href; } }
+
+function pickAsset(item){
+  const a = item.assets||{};
+  for(const k of CONFIG.cogAssetKeys) if(a[k]) return a[k];
+  // else: first asset that looks like a (Cloud-Optimized) GeoTIFF
+  for(const k in a){
+    const t=(a[k].type||"").toLowerCase();
+    if(t.includes("tiff")||/\.tif?f($|\?)/i.test(a[k].href||"")) return a[k];
+  }
+  return null;
+}
+
+// Browsers can't read s3:// — rewrite to the virtual-hosted https URL.
+function s3ToHttps(u){
+  const m=/^s3:\/\/([^/]+)\/(.+)$/i.exec(u||"");
+  return m ? `https://${m[1]}.s3.amazonaws.com/${m[2]}` : u;
+}
+// Turn an asset into a browser-fetchable absolute https URL, resolved against the item.
+function resolveAsset(asset, itemUrl){
+  if(!asset) return null;
+  let h = asset.href;
+  // prefer an https alternate when the primary href is s3://
+  if(/^s3:\/\//i.test(h||"")){
+    h = asset.alternate?.https?.href || asset["alternate:href"] || h;
+  }
+  if(!h) return null;
+  h = s3ToHttps(h);
+  try{ h = new URL(h, itemUrl).href; }catch{}
+  return h;
+}
+
+function ensureImagery(id){
+  if(imageryLayers.has(id)) return imageryLayers.get(id);
+  const it = items.get(id);
+  const row = document.querySelector(`[data-item="${id}"]`);
+  if(typeof window.GeoTIFF === "undefined"){
+    row?.classList.add("err");
+    setStatus("geotiff.js didn't load (CDN blocked?). Imagery can't render without it.");
+    return null;
+  }
+  console.log(`[imagery] ${id} -> ${it.asset}`);
+  setStatus(`loading ${id}…`);
+  const src = new ol.source.GeoTIFF({
+    sources:[{ url: it.asset, nodata:0 }],   // 0 = ARD black collar -> transparent
+    convertToRGB:"auto", interpolate:true, normalize:true });
+  const layer = new ol.layer.WebGLTile({ source:src, zIndex:10, opacity:imageryOpacity });
+  // getView() resolves once the COG header is read, rejects on CORS / 404 / not-a-COG.
+  src.getView()
+    .then(()=>{ row?.classList.remove("err"); setStatus(""); })
+    .catch(err=>{ row?.classList.add("err");
+      setStatus(`COG failed · ${id}\n${err?.message||"read error (CORS or URL)"}`); });
+  imageryLayers.set(id, layer); map.addLayer(layer);
+  return layer;
+}
+
+function applyImageryVis(id){
+  const ft = items.get(id).feature;
+  const layer = imageryLayers.get(id);
+  if(layer) layer.setVisible(!!ft.get("_on") && ft.get("_vis")!==false);
+}
+
+function toggleImagery(id, on){
+  const row = document.querySelector(`[data-item="${id}"]`);
+  const ft = items.get(id).feature;
+  ft.set("_on", on);
+  if(on){ ensureImagery(id); row?.classList.add("on"); }
+  else { row?.classList.remove("on"); }
+  applyImageryVis(id);
+  footSource.changed();
+  setStatus();
+}
+
+/* ======================================================================
+   Load STAC: collection -> items (one level of child catalogs if needed)
+   ====================================================================== */
+async function getJSON(url){ const r=await fetch(url); if(!r.ok) throw new Error(r.status+" "+url); return r.json(); }
+
+async function collectItemLinks(url, depth=0, acc=[]){
+  const doc = await getJSON(url);
+  const links = doc.links||[];
+  const itemLinks = links.filter(l=>l.rel==="item").map(l=>resolve(l.href,url));
+  acc.push(...itemLinks);
+  if(itemLinks.length===0 && depth<2){
+    const children = links.filter(l=>l.rel==="child").map(l=>resolve(l.href,url));
+    for(const c of children) await collectItemLinks(c, depth+1, acc);
+  }
+  return acc;
+}
+
+function fmtDate(iso){ if(!iso) return ""; const d=new Date(iso);
+  return isNaN(d)?iso:d.toISOString().slice(0,10); }
+
+async function loadStac(){
+  try{
+    const links = await collectItemLinks(CONFIG.stacCollection);
+    setStatus(`Reading ${links.length} items…`);
+    const docs = await Promise.allSettled(links.map(getJSON));
+    let ok=0;
+    docs.forEach((res,i)=>{
+      if(res.status!=="fulfilled") return;
+      const item=res.value, id=item.id||links[i].split("/").pop().replace(/\.json$/,"");
+      const asset=resolveAsset(pickAsset(item), links[i]);
+      const feat = gj.readFeature(item, {featureProjection:"EPSG:3857"});
+      feat.set("_id",id); feat.set("_kind","footprint"); feat.set("_vis",true);
+      const when = item.properties?.datetime || item.properties?.start_datetime;
+      footSource.addFeature(feat);
+      items.set(id, { id, when, bbox:item.bbox, asset, feature:feat,
+                      props:item.properties||{} });
+      ok++;
+    });
+    buildImageryList();
+    document.getElementById("img-count").textContent = items.size;
+    document.getElementById("foot-meta").textContent = `${items.size} scenes`;
+    setStatus();
+    if(footSource.getFeatures().length)
+      view.fit(footSource.getExtent(), {padding:[40,40,40,40], maxZoom:12});
+  }catch(e){
+    setStatus(`STAC load failed: ${e.message}\nLikely CORS — host the file or proxy via TiTiler.`);
+  }
+}
+
+function buildImageryList(){
+  const list=document.getElementById("img-list"); list.innerHTML="";
+  const sorted=[...items.values()].sort((a,b)=>(a.when||"").localeCompare(b.when||""));
+  for(const it of sorted){
+    const row=document.createElement("div"); row.className="item"; row.dataset.item=it.id;
+    row.innerHTML=`<span class="box"></span>
+      <div class="info"><div class="id" title="${it.id}">${it.id}</div>
+        <div class="when">${fmtDate(it.when)||"date n/a"}${it.asset?"":" · no COG asset"}</div></div>
+      <button class="zoom">fit</button>`;
+    row.querySelector(".box").onclick=()=>{ if(!it.asset){setStatus("No COG asset on "+it.id);return;}
+      toggleImagery(it.id, !it.feature.get("_on")); };
+    row.querySelector(".zoom").onclick=()=>{
+      const ext = it.feature.getGeometry().getExtent();
+      view.fit(ext,{padding:[60,60,60,60],duration:350,maxZoom:16}); };
+    list.appendChild(row);
+  }
+}
+
+/* filter + opacity */
+document.getElementById("filter").oninput=e=>{
+  const q=e.target.value.toLowerCase();
+  document.querySelectorAll(".item").forEach(el=>{
+    const id=el.dataset.item;
+    const match = id.toLowerCase().includes(q) ||
+      el.querySelector(".when").textContent.toLowerCase().includes(q);
+    el.style.display = match ? "" : "none";
+    const it=items.get(id);
+    if(it){ it.feature.set("_vis", match); applyImageryVis(id); }
+  });
+  footSource.changed();
+};
+const opEl=document.getElementById("op");
+opEl.oninput=e=>{ imageryOpacity=+e.target.value/100; document.getElementById("op-val").textContent=e.target.value;
+  imageryLayers.forEach(l=>l.setOpacity(imageryOpacity)); };
+
+/* ======================================================================
+   USGS ShakeMap MMI contours — one toggleable layer per event
+   ====================================================================== */
+function mmiColor(v){
+  const ramp=[[3,"#b5c9e2"],[4,"#7fb6d9"],[5,"#9fd66b"],[6,"#f4e04d"],
+              [7,"#f2a93b"],[8,"#e8662b"],[9,"#d6322c"],[99,"#8b1a1a"]];
+  for(const [t,c] of ramp) if(v<=t) return c; return "#8b1a1a";
+}
+function mmiStyle(f){
+  const v=+(f.get("value")??f.get("paramvalue")??0);
+  const c=f.get("color")||mmiColor(v);
+  return new ol.style.Style({
+    stroke:new ol.style.Stroke({color:c,width:2}),
+    text: v? new ol.style.Text({text:String(v),font:"600 11px "+getComputedStyle(document.body).fontFamily,
+      fill:new ol.style.Fill({color:c}), stroke:new ol.style.Stroke({color:"#0c1014",width:3}),
+      placement:"line"}) : undefined });
+}
+const mmiLayers=new Map(); // eventId -> {layer, source, loaded}
+function ensureMMI(ev){
+  if(mmiLayers.has(ev.id)) return mmiLayers.get(ev.id);
+  const source=new ol.source.Vector();
+  const layer=new ol.layer.Vector({source, visible:false, zIndex:30, style:mmiStyle});
+  map.addLayer(layer);
+  const rec={layer,source,loaded:false}; mmiLayers.set(ev.id,rec); return rec;
+}
+async function loadMMI(ev){
+  const rec=ensureMMI(ev);
+  if(rec.loaded) return true;
+  const detail=await getJSON(
+    `https://earthquake.usgs.gov/fdsnws/event/1/query?eventid=${ev.id}&format=geojson`);
+  const sm=detail.properties?.products?.shakemap?.[0];
+  const url=sm?.contents?.["download/cont_mi.json"]?.url
+         || sm?.contents?.["download/cont_mmi.json"]?.url;
+  if(!url){ setStatus(`No MMI contours for ${ev.id}`); return false; }
+  const fc=await getJSON(url);
+  rec.source.addFeatures(gj.readFeatures(fc,{featureProjection:"EPSG:3857"}));
+  rec.loaded=true; return true;
+}
+async function toggleMMI(ev, on){
+  const rec=ensureMMI(ev);
+  if(on){ try{ const ok=await loadMMI(ev); rec.layer.setVisible(ok); return ok; }
+          catch(e){ setStatus(`USGS ${ev.id} failed: ${e.message}`); return false; } }
+  rec.layer.setVisible(false); return true;
+}
+// Build the per-event toggle rows; auto-load whichever events default `on` (mainshock).
+(function buildMMIRows(){
+  const host=document.getElementById("mmi-rows");
+  for(const ev of CONFIG.mmiEvents){
+    const row=document.createElement("div"); row.className="row";
+    row.innerHTML=`<span class="sw"></span>
+      <div style="flex:1"><div class="lbl">${ev.label}</div>
+      <div class="meta">tap to load</div></div>`;
+    const swEl=row.querySelector(".sw"), meta=row.querySelector(".meta");
+    swEl.onclick=async ()=>{
+      const turningOn=!swEl.classList.contains("on");
+      if(turningOn){ meta.textContent="loading…"; const ok=await toggleMMI(ev,true);
+        if(ok){ swEl.classList.add("on"); meta.textContent="MMI contours"; } else meta.textContent="load failed"; }
+      else { toggleMMI(ev,false); swEl.classList.remove("on"); meta.textContent="hidden"; }
+    };
+    host.appendChild(row);
+    if(ev.on) swEl.click();
+  }
+})();
+
+/* ======================================================================
+   Building-damage points (crisisvenezuela.org) — color + filter by state
+   ====================================================================== */
+const crisisSource=new ol.source.Vector();
+const activeLevels=new Set(CONFIG.crisis.levels.map(l=>l.key));
+const levelColor=k=>(CONFIG.crisis.levels.find(l=>l.key===k)||{}).color || "#9aa6b2";
+const levelLabel=k=>(CONFIG.crisis.levels.find(l=>l.key===k)||{}).label || k;
+
+const crisisLayer=new ol.layer.Vector({ source:crisisSource, visible:false, zIndex:45, style:f=>{
+  const nivel=f.get("nivel")||"dano";
+  if(!activeLevels.has(nivel)) return null;
+  const c=levelColor(nivel);
+  const approx=f.get("coord_origen")!=="explicita"; // geocoded => approximate location
+  const dot=new ol.style.Style({ image:new ol.style.Circle({ radius:f.get("atrapados")?6:5,
+    fill:new ol.style.Fill({color:c}),
+    stroke:new ol.style.Stroke({ color:approx?"rgba(231,236,242,.45)":"#0c1014",
+      width:approx?1:1.5, lineDash:approx?[2,2]:undefined }) }) });
+  // life-safety: ring points that mention people trapped
+  return f.get("atrapados")
+    ? [ new ol.style.Style({ image:new ol.style.Circle({ radius:9,
+        stroke:new ol.style.Stroke({color:"#ffffff",width:1.5}) }) }), dot ]
+    : dot;
+}});
+map.addLayer(crisisLayer);
+
+async function loadCrisis(){
+  if(crisisSource.getFeatures().length) return true;
+  try{
+    const fc=await getJSON(CONFIG.crisis.base + CONFIG.crisis.query);
+    crisisSource.addFeatures(gj.readFeatures(fc,{featureProjection:"EPSG:3857"}));
+    buildLevelFilters();
+    return true;
+  }catch(e){ document.getElementById("crisis-meta").textContent="failed (CORS?)";
+    setStatus(`Crisis API failed: ${e.message}`); return false; }
+}
+
+function buildLevelFilters(){
+  const counts={}; crisisSource.getFeatures().forEach(f=>{
+    const k=f.get("nivel")||"dano"; counts[k]=(counts[k]||0)+1; });
+  document.getElementById("crisis-meta").textContent=`${crisisSource.getFeatures().length} damage points`;
+  const host=document.getElementById("crisis-levels"); host.innerHTML="";
+  for(const lv of CONFIG.crisis.levels){
+    const row=document.createElement("div");
+    row.className="lvl on"; row.style.setProperty("--c",lv.color);
+    row.innerHTML=`<span class="box"></span><span class="dot"></span>
+      <span class="t">${lv.label}</span><span class="n">${counts[lv.key]||0}</span>`;
+    row.onclick=()=>{
+      const on=activeLevels.has(lv.key);
+      if(on){ activeLevels.delete(lv.key); row.classList.replace("on","off"); }
+      else  { activeLevels.add(lv.key);    row.classList.replace("off","on"); }
+      crisisSource.changed();
+    };
+    host.appendChild(row);
+  }
+}
+
+/* ======================================================================
+   Overlay switches
+   ====================================================================== */
+function sw(elId, onToggle){
+  const el=document.getElementById(elId);
+  el.onclick=async ()=>{
+    const turningOn=!el.classList.contains("on");
+    if(turningOn){ const ok=await onToggle(true); if(ok!==false) el.classList.add("on"); }
+    else { onToggle(false); el.classList.remove("on"); }
+  };
+}
+document.getElementById("sw-foot").onclick=function(){ this.classList.toggle("on");
+  footLayer.setVisible(this.classList.contains("on")); };
+sw("sw-crisis", async on=>{ if(on){ const ok=await loadCrisis(); crisisLayer.setVisible(ok); return ok; }
+  crisisLayer.setVisible(false); });
+
+/* ======================================================================
+   Click popup (footprint -> toggle imagery; crisis -> attributes)
+   ====================================================================== */
+const popEl=document.getElementById("popup");
+const overlay=new ol.Overlay({element:popEl, stopEvent:true}); map.addOverlay(overlay);
+const esc=s=>String(s??"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
+map.on("singleclick", e=>{
+  let hit=false;
+  map.forEachFeatureAtPixel(e.pixel, (f,layer)=>{
+    if(hit) return;
+    if(layer===footLayer){
+      const id=f.get("_id"), it=items.get(id), on=!!it.feature.get("_on");
+      popEl.innerHTML=`<div class="pop"><span class="x">×</span>
+        <h4>${id}</h4>
+        <div class="kv">date · ${fmtDate(it.when)||"n/a"}</div>
+        <div class="kv">asset · ${it.asset?"COG ✓":"none"}</div>
+        <button>${on?"Hide imagery":"Show imagery"}</button></div>`;
+      popEl.querySelector("button").onclick=()=>{ toggleImagery(id,!on); overlay.setPosition(undefined); };
+    } else if(layer===crisisLayer){
+      const p=f.getProperties();
+      const nivel=p.nivel||"dano", c=levelColor(nivel);
+      const approx=p.coord_origen!=="explicita";
+      const loc=[p.zona,p.municipio,p.estado].filter(Boolean).join(", ");
+      const srcs=(p.fuentes||[]).filter(s=>s&&s.url)
+        .map(s=>`<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.fuente||s.url)}</a>`).join("");
+      popEl.innerHTML=`<div class="pop"><span class="x">×</span>
+        <h4>${esc(p.estructura||"Unnamed structure")}</h4>
+        <span class="tag" style="background:${c}">${esc(levelLabel(nivel))}</span>
+        ${loc?`<div class="kv">${esc(loc)}</div>`:""}
+        ${p.descripcion?`<div class="desc">${esc(p.descripcion)}</div>`:""}
+        ${p.atrapados?`<div class="kv trapped">⚠ People reported trapped</div>`:""}
+        <div class="kv">sources · <b>${p.n_fuentes||0}</b>${p.confianza&&p.confianza.badge?` · ${esc(p.confianza.badge)}`:""}</div>
+        <div class="kv">last seen · ${fmtDate(p.fecha)||"n/a"}</div>
+        <div class="kv ${approx?"approx":""}">coords · ${approx?"approximate (geocoded)":"precise"}</div>
+        ${srcs?`<div class="src">${srcs}</div>`:""}
+      </div>`;
+    } else return;
+    popEl.querySelector(".x").onclick=()=>overlay.setPosition(undefined);
+    popEl.style.display=""; overlay.setPosition(e.coordinate); hit=true;
+  }, {hitTolerance:4});
+  if(!hit) overlay.setPosition(undefined);
+});
+map.on("pointermove", e=>{ map.getTargetElement().style.cursor =
+  map.hasFeatureAtPixel(e.pixel,{hitTolerance:4})?"pointer":""; });
+
+/* ======================================================================
+   Misc UI
+   ====================================================================== */
+document.querySelectorAll(".sect .bar").forEach(bar=>bar.onclick=()=>bar.parentElement.classList.toggle("collapsed"));
+
+(function legend(){
+  const L=document.getElementById("legend");
+  [["I–III","#b5c9e2"],["IV","#7fb6d9"],["V","#9fd66b"],["VI","#f4e04d"],
+   ["VII","#f2a93b"],["VIII","#e8662b"],["IX","#d6322c"],["X+","#8b1a1a"]]
+   .forEach(([t,c])=>{ const d=document.createElement("div"); d.className="lg";
+     d.innerHTML=`<i style="background:${c}"></i>MMI ${t}`; L.appendChild(d); });
+})();
+
+let baseStatus="";
+function setStatus(msg){
+  if(msg!==undefined) baseStatus=msg;
+  const onImg=[...imageryLayers.values()].filter(l=>l.getVisible()).length;
+  const live=`scenes <b>${items.size}</b> · imagery on <b>${onImg}</b>`;
+  document.getElementById("status").innerHTML = (baseStatus? baseStatus+"\n":"") + live;
+}
+
+loadStac();
+</script>
+</body>
+</html>
