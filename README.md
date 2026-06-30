@@ -35,26 +35,6 @@ npx serve
 
 Then open `http://localhost:8000/` (or whatever port is shown).
 
-## Deploy to GitHub Pages
-
-1. Create a public repo and add `index.html` (this file) to its root.
-2. Push.
-3. Repo **Settings → Pages → Build and deployment → Source: Deploy from a branch**, pick your branch and `/ (root)`, save.
-4. Wait ~1 minute; your site is at `https://<username>.github.io/<repo>/`.
-
-Any later push to that branch redeploys automatically.
-
-## Configuration
-
-Everything you'd change lives in the `CONFIG` object at the top of the `<script>` in `index.html`:
-
-- `stacCollection` — the Vantor STAC collection URL for the event.
-- `cogAssetKeys` — which STAC asset to draw (defaults to the `visual` RGB COG).
-- `mmiEvents` — USGS event IDs, labels, and which loads by default.
-- `crisis` — the damage API endpoint, query, and the damage-state levels/colors.
-
-To retarget the map to a **different disaster**, swap `stacCollection` for another Vantor event and update `mmiEvents` with that event's USGS IDs. The crisis layer is specific to this event's API.
-
 ## Data sources & licenses
 
 | Layer | Source | License |
