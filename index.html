@@ -126,6 +126,22 @@
   .pop .x{position:absolute;top:6px;right:9px;color:var(--ink-faint);cursor:pointer;font-size:14px}
   .ol-popup{position:absolute;transform:translate(-50%,calc(-100% - 12px))}
 
+  .pop.fp{min-width:250px}
+  .fp-list{max-height:232px;overflow-y:auto;margin-top:5px;display:flex;flex-direction:column;gap:2px}
+  .fp-list::-webkit-scrollbar{width:8px}
+  .fp-list::-webkit-scrollbar-thumb{background:#22303c;border-radius:8px;border:2px solid var(--panel)}
+  .fp-row{display:flex;align-items:center;gap:8px;padding:5px 4px;border-radius:6px}
+  .fp-row:hover{background:var(--panel-2)}
+  .fp-info{flex:1;min-width:0}
+  .fp-id{font:11.5px/1.2 var(--mono);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fp-when{font:10px/1.2 var(--mono);color:var(--ink-faint)}
+  .fp-tog{flex:none;border:0;border-radius:5px;background:#26323d;color:var(--ink-dim);
+       font:600 10.5px var(--sans);padding:5px 9px;cursor:pointer;min-width:46px}
+  .fp-tog.on{background:var(--accent);color:#0c1014}
+  .fp-fit{flex:none;border:0;border-radius:5px;background:#222e38;color:var(--ink-dim);
+       font:10px var(--mono);padding:5px 7px;cursor:pointer}
+  .fp-tog:hover,.fp-fit:hover{filter:brightness(1.18)}
+
   /* coordinate jump */
   .goto{display:flex;gap:6px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
   .goto input{flex:1;min-width:0;background:var(--panel-2);border:1px solid var(--line);color:var(--ink);
@@ -296,13 +312,16 @@ Object.keys(bases).forEach((name,i)=>{
    Footprints + per-item imagery
    ====================================================================== */
 const footSource = new ol.source.Vector();
-const footLayer = new ol.layer.Vector({ source: footSource, zIndex:20, style: f =>
-  f.get("_vis")===false ? null :
-  new ol.style.Style({
-    stroke: new ol.style.Stroke({ color: getComputedStyle(document.documentElement)
-      .getPropertyValue("--foot").trim(), width: f.get("_on")?2.5:1.4 }),
-    fill: new ol.style.Fill({ color: f.get("_on")?"rgba(255,138,61,.10)":"rgba(54,214,207,.07)" })
-  }) });
+const FOOT_COLOR = getComputedStyle(document.documentElement).getPropertyValue("--foot").trim();
+const footLayer = new ol.layer.Vector({ source: footSource, zIndex:20, style: f => {
+  if(f.get("_vis")===false) return null;
+  const on=f.get("_on"), hi=f.get("_hi");
+  return new ol.style.Style({
+    stroke: new ol.style.Stroke({ color: hi?"#ffffff":FOOT_COLOR, width: hi?3.5:(on?2.5:1.4) }),
+    fill: new ol.style.Fill({ color: hi?"rgba(255,255,255,.14)"
+      : (on?"rgba(255,138,61,.10)":"rgba(54,214,207,.07)") })
+  });
+} });
 map.addLayer(footLayer);
 
 const imageryLayers = new Map();   // itemId -> WebGLTile layer (lazy)
@@ -658,47 +677,91 @@ clearBtn.onclick=()=>{ markerSource.clear(); coordEl.value=""; clearBtn.style.di
 const popEl=document.getElementById("popup");
 const overlay=new ol.Overlay({element:popEl, stopEvent:true}); map.addOverlay(overlay);
 const esc=s=>String(s??"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
+// ---- highlight the footprint matching a hovered list row ----
+let hiId=null;
+function setHighlight(id){ if(hiId===id) return; clearHighlight();
+  hiId=id; items.get(id)?.feature.set("_hi",true); footSource.changed(); }
+function clearHighlight(){ if(!hiId) return;
+  const it=items.get(hiId); if(it) it.feature.set("_hi",false); hiId=null; footSource.changed(); }
+function closePopup(){ overlay.setPosition(undefined); clearHighlight(); }
+
+function showPointPopup(f, layer, coordinate){
+  if(layer===crisisLayer){
+    const p=f.getProperties();
+    const nivel=p.nivel||"dano", c=levelColor(nivel);
+    const approx=p.coord_origen!=="explicita";
+    const loc=[p.zona,p.municipio,p.estado].filter(Boolean).join(", ");
+    const srcs=(p.fuentes||[]).filter(s=>s&&s.url)
+      .map(s=>`<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.fuente||s.url)}</a>`).join("");
+    popEl.innerHTML=`<div class="pop"><span class="x">×</span>
+      <h4>${esc(p.estructura||"Unnamed structure")}</h4>
+      <span class="tag" style="background:${c}">${esc(levelLabel(nivel))}</span>
+      ${loc?`<div class="kv">${esc(loc)}</div>`:""}
+      ${p.descripcion?`<div class="desc">${esc(p.descripcion)}</div>`:""}
+      ${p.atrapados?`<div class="kv trapped">⚠ People reported trapped</div>`:""}
+      <div class="kv">sources · <b>${p.n_fuentes||0}</b>${p.confianza&&p.confianza.badge?` · ${esc(p.confianza.badge)}`:""}</div>
+      <div class="kv">last seen · ${fmtDate(p.fecha)||"n/a"}</div>
+      <div class="kv ${approx?"approx":""}">coords · ${approx?"approximate (geocoded)":"precise"}</div>
+      ${srcs?`<div class="src">${srcs}</div>`:""}
+    </div>`;
+  } else { // markerLayer
+    const [lat,lon]=f.get("_coord");
+    popEl.innerHTML=`<div class="pop"><span class="x">×</span>
+      <h4>Pinned location</h4>
+      <div class="kv">lat · <b>${lat.toFixed(5)}</b></div>
+      <div class="kv">lon · <b>${lon.toFixed(5)}</b></div></div>`;
+  }
+  popEl.querySelector(".x").onclick=closePopup;
+  popEl.style.display=""; overlay.setPosition(coordinate);
+}
+
+function showFootprintList(feats, coordinate){
+  const sorted=feats.slice().sort((a,b)=>
+    ((items.get(a.get("_id"))||{}).when||"").localeCompare((items.get(b.get("_id"))||{}).when||""));
+  const rows=sorted.map(f=>{
+    const id=f.get("_id"), it=items.get(id), on=!!it.feature.get("_on");
+    return `<div class="fp-row" data-id="${esc(id)}">
+      <button class="fp-tog ${on?"on":""}" data-id="${esc(id)}">${on?"Hide":"Show"}</button>
+      <div class="fp-info"><div class="fp-id" title="${esc(id)}">${esc(id)}</div>
+        <div class="fp-when">${fmtDate(it.when)||"date n/a"}${it.asset?"":" · no COG"}</div></div>
+      <button class="fp-fit" data-id="${esc(id)}">fit</button>
+    </div>`;
+  }).join("");
+  popEl.innerHTML=`<div class="pop fp"><span class="x">×</span>
+    <h4>${feats.length} footprint${feats.length>1?"s":""} here</h4>
+    <div class="fp-list">${rows}</div></div>`;
+  popEl.querySelector(".x").onclick=closePopup;
+  popEl.querySelectorAll(".fp-tog").forEach(btn=>btn.onclick=()=>{
+    const id=btn.dataset.id, on=!!items.get(id).feature.get("_on");
+    toggleImagery(id,!on);
+    btn.classList.toggle("on",!on); btn.textContent=!on?"Hide":"Show";
+  });
+  popEl.querySelectorAll(".fp-fit").forEach(btn=>btn.onclick=()=>{
+    const it=items.get(btn.dataset.id);
+    view.fit(it.feature.getGeometry().getExtent(),{padding:[60,60,60,60],duration:350,maxZoom:16});
+  });
+  popEl.querySelectorAll(".fp-row").forEach(row=>
+    row.addEventListener("mouseenter",()=>setHighlight(row.dataset.id)));
+  popEl.querySelector(".fp-list").addEventListener("mouseleave",clearHighlight);
+  popEl.style.display=""; overlay.setPosition(coordinate);
+}
+
 map.on("singleclick", e=>{
-  let hit=false;
-  map.forEachFeatureAtPixel(e.pixel, (f,layer)=>{
-    if(hit) return;
-    if(layer===footLayer){
-      const id=f.get("_id"), it=items.get(id), on=!!it.feature.get("_on");
-      popEl.innerHTML=`<div class="pop"><span class="x">×</span>
-        <h4>${id}</h4>
-        <div class="kv">date · ${fmtDate(it.when)||"n/a"}</div>
-        <div class="kv">asset · ${it.asset?"COG ✓":"none"}</div>
-        <button>${on?"Hide imagery":"Show imagery"}</button></div>`;
-      popEl.querySelector("button").onclick=()=>{ toggleImagery(id,!on); overlay.setPosition(undefined); };
-    } else if(layer===crisisLayer){
-      const p=f.getProperties();
-      const nivel=p.nivel||"dano", c=levelColor(nivel);
-      const approx=p.coord_origen!=="explicita";
-      const loc=[p.zona,p.municipio,p.estado].filter(Boolean).join(", ");
-      const srcs=(p.fuentes||[]).filter(s=>s&&s.url)
-        .map(s=>`<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.fuente||s.url)}</a>`).join("");
-      popEl.innerHTML=`<div class="pop"><span class="x">×</span>
-        <h4>${esc(p.estructura||"Unnamed structure")}</h4>
-        <span class="tag" style="background:${c}">${esc(levelLabel(nivel))}</span>
-        ${loc?`<div class="kv">${esc(loc)}</div>`:""}
-        ${p.descripcion?`<div class="desc">${esc(p.descripcion)}</div>`:""}
-        ${p.atrapados?`<div class="kv trapped">⚠ People reported trapped</div>`:""}
-        <div class="kv">sources · <b>${p.n_fuentes||0}</b>${p.confianza&&p.confianza.badge?` · ${esc(p.confianza.badge)}`:""}</div>
-        <div class="kv">last seen · ${fmtDate(p.fecha)||"n/a"}</div>
-        <div class="kv ${approx?"approx":""}">coords · ${approx?"approximate (geocoded)":"precise"}</div>
-        ${srcs?`<div class="src">${srcs}</div>`:""}
-      </div>`;
-    } else if(layer===markerLayer){
-      const [lat,lon]=f.get("_coord");
-      popEl.innerHTML=`<div class="pop"><span class="x">×</span>
-        <h4>Pinned location</h4>
-        <div class="kv">lat · <b>${lat.toFixed(5)}</b></div>
-        <div class="kv">lon · <b>${lon.toFixed(5)}</b></div></div>`;
-    } else return;
-    popEl.querySelector(".x").onclick=()=>overlay.setPosition(undefined);
-    popEl.style.display=""; overlay.setPosition(e.coordinate); hit=true;
-  }, {hitTolerance:4});
-  if(!hit) overlay.setPosition(undefined);
+  // points (damage, pin) take priority over footprints
+  let pf=null, pl=null;
+  map.forEachFeatureAtPixel(e.pixel,(f,l)=>{
+    if(!pf && (l===crisisLayer||l===markerLayer)){ pf=f; pl=l; }
+  },{hitTolerance:5});
+  if(pf){ showPointPopup(pf,pl,e.coordinate); return; }
+
+  // otherwise gather ALL visible footprints under the click
+  const hits=[];
+  map.forEachFeatureAtPixel(e.pixel,(f,l)=>{
+    if(l===footLayer && f.get("_vis")!==false) hits.push(f);
+  },{hitTolerance:4});
+  if(hits.length){ showFootprintList(hits,e.coordinate); return; }
+
+  closePopup();
 });
 map.on("pointermove", e=>{ map.getTargetElement().style.cursor =
   map.hasFeatureAtPixel(e.pixel,{hitTolerance:4})?"pointer":""; });
